@@ -37,6 +37,10 @@ class _NotConnectedFile:
 
 class AmuleClient:
 
+    #
+    # Connection and socket handling
+    #
+
     def __init__(self):
         self._reset()
 
@@ -61,54 +65,6 @@ class AmuleClient:
     def _readpacket(self):
         """Receive a packet from amuled"""
         return ECPacket(buffer = self._rfile)
-
-    def _linear_decoder(self, packet, ok_opcodes, tag_map):
-        """Linear packet decoder
-        
-        Decode packet into a dict() containing:
-        - 'ok':True if the packet opcode is in ok_opcodes, 'ok':False if not
-        - an item for each tag_map.keys() that is a tagname found in the packet
-          with tag_map[tagname] as the key and the tag value as the value
-          
-        """
-    
-        ret = {'ok': False}
-        if packet.opcode in ok_opcodes:
-            ret['ok'] = True
-
-        for t in packet.tags:
-            if tag_map.has_key(t.name):
-                ret[tag_map[t.name]] = t.value
-
-        return ret
-        
-    def _list_decoder(self, packet, ok_opcodes, item_tag, item_map):
-        """List packet decoder
-        
-        Decode packet into a dict() containing:
-        - an 'ok' item as in _linear_decoder
-        - a 'items' item which is in turn a dict().
-        
-        'items' keys are values from the packet tags with tagname item_tag, and
-        each is filled like _linear_decoder does using item_map.
-        
-        """
-    
-        ret = {'ok': False}
-        if packet.opcode in ok_opcodes:
-            ret['ok'] = True
-            
-        items = dict()
-        for t in packet.tags:
-            if t.name == item_tag:
-                item = dict()
-                for st in t.subtags:
-                    if item_map.has_key(st.name):
-                        item[item_map[st.name]] = st.value
-                items[t.value] = item
-                
-        ret['items'] = items
-        return ret
         
     def _authenticate(self, password, client_name, client_version):
         """Authenticate with amuled
@@ -198,12 +154,14 @@ class AmuleClient:
         self._rfile = self._socket.makefile("rb")
 
         try:
-            if not self._authenticate(password, client_name, client_version):
-                self.disconnect()
-                raise ECConnectionError("Authentication failed.")
+            ret = self._authenticate(password, client_name, client_version)
         except:
             self.disconnect()
             raise
+        else:
+            if not ret:
+                self.disconnect()
+                raise ECConnectionError("Authentication failed.")
 
     def disconnect(self):
         """Disconnect from amuled
@@ -216,6 +174,69 @@ class AmuleClient:
         self._rfile.close()
         self._socket.close()
         self._reset()
+        
+    #
+    # Private packet decoders
+    #
+        
+    def _linear_decoder(self, packet, ok_opcodes, tag_map):
+        """Linear packet decoder
+        
+        Decode packet into a dict() containing:
+        - 'ok':True if the packet opcode is in ok_opcodes, 'ok':False if not
+        - an item for each tag_map.keys() that is a tagname found in the packet
+          with tag_map[tagname] as the key and the tag value as the value
+          
+        """
+    
+        ret = {'ok': False}
+        if packet.opcode in ok_opcodes:
+            ret['ok'] = True
+
+        for t in packet.tags:
+            if tag_map.has_key(t.name):
+                ret[tag_map[t.name]] = t.value
+
+        return ret
+        
+    def _list_decoder(self, packet, ok_opcodes, item_tag, item_map):
+        """List packet decoder
+        
+        Decode packet into a dict() containing:
+        - an 'ok' item as in _linear_decoder
+        - a 'items' item which is in turn a dict().
+        
+        'items' keys are values from the packet tags with tagname item_tag, and
+        each is filled like _linear_decoder does using item_map.
+        
+        """
+    
+        ret = {'ok': False}
+        if packet.opcode in ok_opcodes:
+            ret['ok'] = True
+            
+        items = dict()
+        for t in packet.tags:
+            if t.name == item_tag:
+                item = dict()
+                for st in t.subtags:
+                    if item_map.has_key(st.name):
+                        if isinstance(item_map[st.name], list):
+                            key, tagname = item_map[st.name]
+                            item[key] = []
+                            for sst in st.subtags:
+                                if sst.name == tagname:
+                                    item[key].append(sst.value)                                    
+                        else:
+                            item[item_map[st.name]] = st.value
+                items[t.value] = item
+                
+        ret['items'] = items
+        return ret
+     
+    #
+    # Status requests
+    #
         
     def get_server_status(self):
         req_packet = ECPacket(opcode = EC_OP_STAT_REQ)
@@ -252,6 +273,10 @@ class AmuleClient:
         del(ret['ok'])
         ret['client_id'] = resp.get_tag(EC_TAG_CONNSTATE).get_subtag(EC_TAG_CLIENT_ID).value
         return ret
+
+    #
+    # Search requests
+    #
         
     def search_start(self, query, method, minsize = None, maxsize = None,
                         type = '', avail = None, ext = None):
@@ -316,12 +341,12 @@ class AmuleClient:
         - 'name': file name
         - 'size': file size in bytes
         - 'src_count': seed count
-        - 'src_count_xfer': transferring seed count (for already downloading
-          files)
+        - 'src_count_xfer': transferring seed count
           
         When update is True, only new results are filled, and changed results
-        (eg. additional seeds found) only have changed keys filled. All result
-        hashes are present, though.
+        (eg. additional seeds found) only have changed keys filled.  All result
+        hashes are present, though.  'new' and 'changed' refer to the last time
+        search results were fetched from amuled.
         
         """
         req_packet = ECPacket(opcode = EC_OP_SEARCH_RESULTS)
@@ -330,6 +355,7 @@ class AmuleClient:
                                                 EC_TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
         resp = self._readpacket()
+        
         return self._list_decoder(resp,
             [EC_OP_SEARCH_RESULTS],
             EC_TAG_SEARCHFILE,
@@ -340,4 +366,162 @@ class AmuleClient:
                 EC_TAG_PARTFILE_SIZE_FULL: 'size'
             }
         )['items']
+     
+    #
+    # Download list
+    #
+        
+    def download_search_results(self, hashes, category = 0):
+        req_packet = ECPacket(opcode = EC_OP_DOWNLOAD_SEARCH_RESULT)
+        for h in hashes:
+            tag = ECHash16Tag(h, EC_TAG_SEARCHFILE)
+            tag.subtags.append(ECUInt8Tag(category, EC_TAG_CATEGORY))
+            req_packet.tags.append(tag)
+        self._writepacket(req_packet)
+        resp = self._readpacket()
 
+    def download_ed2klinks(self, links, category = 0):
+        req_packet = ECPacket(opcode = EC_OP_ADD_LINK)
+        for l in links:
+            tag = ECStringTag(l, EC_TAG_STRING)
+            tag.subtags.append(ECUInt8Tag(category, EC_TAG_CATEGORY))
+            req_packet.tags.append(tag)
+            
+        self._writepacket(req_packet)
+        resp = self._readpacket()
+        
+        if resp.opcode == EC_OP_NOOP:
+            return True
+        else:
+            return False
+        
+    def get_download_list(self, detail = False, update = False):
+        if detail:
+            req_packet = ECPacket(opcode = EC_OP_GET_DLOAD_QUEUE_DETAIL)
+            req_packet.tags.append(ECUInt8Tag(EC_DETAIL_FULL,
+                                                    EC_TAG_DETAIL_LEVEL))
+        else:
+            req_packet = ECPacket(opcode = EC_OP_GET_DLOAD_QUEUE)
+            if update:
+                req_packet.tags.append(ECUInt8Tag(EC_DETAIL_INC_UPDATE,
+                                                    EC_TAG_DETAIL_LEVEL))
+        self._writepacket(req_packet)
+        resp = self._readpacket()
+                
+        return self._list_decoder(resp,
+            [EC_OP_DLOAD_QUEUE],
+            EC_TAG_PARTFILE,
+            {
+                EC_TAG_PARTFILE_STATUS: 'status',
+                EC_TAG_PARTFILE_STOPPED: 'stopped',
+                EC_TAG_PARTFILE_SOURCE_COUNT: 'src_count',
+                EC_TAG_PARTFILE_SOURCE_COUNT_NOT_CURRENT: 'src_count_not_current',
+                EC_TAG_PARTFILE_SOURCE_COUNT_XFER: 'src_count_xfer',
+                EC_TAG_PARTFILE_SOURCE_COUNT_A4AF: 'src_count_a4af',
+                EC_TAG_PARTFILE_NAME: 'name',
+                EC_TAG_PARTFILE_SIZE_XFER: 'size_xfer',
+                EC_TAG_PARTFILE_SIZE_DONE: 'size_done',
+                EC_TAG_PARTFILE_SIZE_FULL: 'size',
+                EC_TAG_PARTFILE_SPEED: 'speed',
+                EC_TAG_PARTFILE_PRIO: 'prio',
+                EC_TAG_PARTFILE_CAT: 'cat',
+                EC_TAG_PARTFILE_LAST_SEEN_COMP: 'last_seen_comp',
+                EC_TAG_PARTFILE_LAST_RECV: 'last_recv',
+                EC_TAG_PARTFILE_DOWNLOAD_ACTIVE: 'download_active',
+                EC_TAG_PARTFILE_LOST_CORRUPTION: 'lost_corruption',
+                EC_TAG_PARTFILE_GAINED_COMPRESSION: 'gained_compression',
+                EC_TAG_PARTFILE_SAVED_ICH: 'saved_ich',
+                # These 4 tags are CUSTOM which I don't know how to handle (yet)
+                # EC_TAG_PARTFILE_COMMENTS: 'comments',
+                # EC_TAG_PARTFILE_PART_STATUS: 'part_status',
+                # EC_TAG_PARTFILE_GAP_STATUS: 'gap_status',
+                # EC_TAG_PARTFILE_REQ_STATUS: 'req_status',
+                EC_TAG_PARTFILE_PARTMETID: 'partmetid',
+                EC_TAG_PARTFILE_ED2K_LINK: 'ed2k_link',
+                EC_TAG_PARTFILE_SOURCE_NAMES: ['source_names', EC_TAG_PARTFILE_SOURCE_NAMES]
+            }
+        )['items']
+        
+    #
+    # Downloading files handling
+    #
+
+    def _partfile_cmd(self, hashes, opcode, arg = None):
+        """Send a partfile command to amuled
+        
+        A same command can hold multiple hashes (ie target multiple partfiles).
+        If arg is present (must be a ECTag), it is added to every partfile.
+        
+        Returns True/False on success/failure.
+        
+        """
+        
+        req_packet = ECPacket(opcode = opcode)
+        for h in hashes:
+            tag = ECHash16Tag(h, EC_TAG_PARTFILE)
+            if arg is not None:
+                tag.subtags.append(arg)
+            req_packet.tags.append(tag)
+            
+        self._writepacket(req_packet)
+        resp = self._readpacket()
+        
+        if resp.opcode == EC_OP_NOOP:
+            return True
+        else:
+            return False
+        
+    def partfile_remove_noneed(self, hashes):
+        """Remove not needed sources from partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_REMOVE_NO_NEEDED)
+        
+    def partfile_remove_fullqueue(self, hashes):
+        """Remove sources with a full UL queue from partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_REMOVE_FULL_QUEUE)
+        
+    def partfile_remove_highqueue(self, hashes):
+        """Remove sources with a high UL queue from partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_REMOVE_HIGH_QUEUE)
+        
+    def partfile_cleanup_sources(self, hashes):
+        """Clean up sources from partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_CLEANUP_SOURCES)
+        
+    def partfile_swap_a4af_this(self, hashes):
+        """Swap A4AF sources to these partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SWAP_A4AF_THIS)
+        
+    def partfile_swap_a4af_this_auto(self, hashes):
+        """Automatically swap A4AF sources to these partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SWAP_A4AF_THIS_AUTO)
+        
+    def partfile_swap_a4af_others(self, hashes):
+        """Swap A4AF sources of partfiles to other partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SWAP_A4AF_OTHERS)
+        
+    def partfile_pause(self, hashes):
+        """Pause partfiles download"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_PAUSE)
+        
+    def partfile_resume(self, hashes):
+        """Resume partfiles download"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_RESUME)
+        
+    def partfile_stop(self, hashes):
+        """Stop partfiles download"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_STOP)
+        
+    def partfile_delete(self, hashes):
+        """Delete partfiles"""
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_DELETE)
+        
+    def partfile_set_prio(self, hashes, prio):
+        """Set partfiles priority"""
+        arg = ECUInt8Tag(prio, EC_TAG_PARTFILE_PRIO)
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_PRIO_SET, arg)
+        
+    def partfile_set_cat(self, hashes, cat = 0):
+        """Set partfiles category"""
+        arg = ECUInt8Tag(cat, EC_TAG_PARTFILE_CAT)
+        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SET_CAT, arg)
+        

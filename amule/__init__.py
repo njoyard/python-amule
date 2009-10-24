@@ -239,6 +239,7 @@ class AmuleClient:
     #
         
     def get_server_status(self):
+        """Get status variables from amuled"""
         req_packet = ECPacket(opcode = EC_OP_STAT_REQ)
         req_packet.tags.append(ECUInt8Tag(EC_DETAIL_CMD, EC_TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
@@ -379,6 +380,9 @@ class AmuleClient:
             req_packet.tags.append(tag)
         self._writepacket(req_packet)
         resp = self._readpacket()
+        
+        # aMule response does not indicate success or failure (yet?)
+        return True
 
     def download_ed2klinks(self, links, category = 0):
         req_packet = ECPacket(opcode = EC_OP_ADD_LINK)

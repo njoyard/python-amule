@@ -101,19 +101,6 @@ class ECPacket:
             data = zlib.decompress(dbuf.read(msg_len))
             dbuf = StringIO(data)
 
-            if 0:
-                out = ""
-                for i in range(len(data)):
-                    out = out + "%02x" % ord(data[i])
-                    if i % 2 == 1:
-                        out = out + " "
-                    if i % 16 == 15:
-                        out = out + "\n"
-                print "ZLIB decompressed %d bytes into %d bytes" % (msg_len, len(data))
-                print "ZLIB OUTPUT PACKET DUMP:"
-                print out
-                print "END"
-
         self.opcode = struct.unpack("!B", dbuf.read(1))[0]
 
         if utf8_numbers:

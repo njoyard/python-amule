@@ -16,32 +16,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import struct
-import eccodes
-
-def ec_code_str(prefix, value):
-    """Search for EC codes by value
-
-    Return the first symbol name in eccodes, which starts with prefix and
-    evaluates to value, or None if none found.
-
-    """
-
-    for s in dir(eccodes):
-        if s.startswith(prefix) and eval("eccodes.%s" % s) == value:
-            return s
-    return None
-
-def ec_opcode_str(value):
-    """Get the first EC opcode name that evaluates to value"""
-    return ec_code_str("EC_OP_", value)
-
-def ec_tagname_str(value):
-    """Get the first EC tag name that evaluates to value"""
-    return ec_code_str("EC_TAG_", value)
-
-def ec_tagtype_str(value):
-    """Get the first EC tag type that evaluates to value"""
-    return ec_code_str("EC_TAGTYPE_", value)
 
 def ec_number_to_utf8(number):
     """UTF8-encode a number into a string"""

@@ -29,16 +29,16 @@ class ECRemainingBytesError(Exception): pass
 
 
 class ECPacket:
-    def __init__(self, **kwargs):
+    def __init__(self, codes, **kwargs):
         self.tags = []
-        self.flags = EC_FLAG_BLANK
-        self.accept_flags = EC_FLAG_BLANK
-        self.opcode = kwargs.get('opcode', EC_OP_NOOP)
+        self.flags = codes.FLAG_BLANK
+        self.accept_flags = codes.FLAG_BLANK
+        self.opcode = kwargs.get('opcode', codes.OP_NOOP)
 
         if kwargs.has_key('rawdata'):
-            self._parse_raw_packet(kwargs['rawdata'])
+            self._parse_raw_packet(codes, kwargs['rawdata'])
         elif kwargs.has_key('buffer'):
-            self._read_raw_packet(kwargs['buffer'])
+            self._read_raw_packet(codes, kwargs['buffer'])
 
     def set_flag(self, flag):
         self.flags = self.flags | flag
@@ -58,15 +58,15 @@ class ECPacket:
                 return t
         return None
 
-    def get_raw_packet(self):
-        if self.accept_flags != EC_FLAG_BLANK:
-            self.set_flag(EC_FLAG_ACCEPTS)
+    def get_raw_packet(self, codes):
+        if self.accept_flags != codes.FLAG_BLANK:
+            self.set_flag(codes.FLAG_ACCEPTS)
             headdata = "\x00\x00" + struct.pack("BB", self.flags, self.accept_flags)
         else:
             headdata = "\x00\x00\x00" + struct.pack("B", self.flags)
 
-        utf8_numbers = self.get_flag(EC_FLAG_UTF8_NUMBERS)
-        use_zlib = self.get_flag(EC_FLAG_ZLIB)
+        utf8_numbers = self.get_flag(codes.FLAG_UTF8_NUMBERS)
+        use_zlib = self.get_flag(codes.FLAG_ZLIB)
 
         tagdata = ""
         for t in self.tags:
@@ -85,17 +85,17 @@ class ECPacket:
         headdata = headdata + struct.pack("!I", len(appdata))
         return headdata + appdata
 
-    def _parse_raw_packet(self, data):
-        self._read_raw_packet(StringIO(data))
+    def _parse_raw_packet(self, codes, data):
+        self._read_raw_packet(codes, StringIO(data))
 
-    def _read_raw_packet(self, dbuf):
+    def _read_raw_packet(self, codes, dbuf):
         self.flags, msg_len = struct.unpack("!II", dbuf.read(8))
 
-        if self.get_flag(EC_FLAG_ACCEPTS):
+        if self.get_flag(codes.FLAG_ACCEPTS):
             self.accept_flags = (self.flags & 0xFF00 ) >> 8
 
-        utf8_numbers = self.get_flag(EC_FLAG_UTF8_NUMBERS)
-        use_zlib = self.get_flag(EC_FLAG_ZLIB)
+        utf8_numbers = self.get_flag(codes.FLAG_UTF8_NUMBERS)
+        use_zlib = self.get_flag(codes.FLAG_ZLIB)
 
         if use_zlib:
             data = zlib.decompress(dbuf.read(msg_len))
@@ -164,11 +164,11 @@ class ECPacket:
         for i in range(tagcount):
             self.tags.append(parse_tag(dbuf, utf8_numbers))
 
-    def dump(self, with_raw = False):
+    def dump(self, codes, with_raw = False):
         s = "Flags: 0x%02x\n" % self.flags
-        if self.get_flag(EC_FLAG_ACCEPTS):
+        if self.get_flag(codes.FLAG_ACCEPTS):
             s = s + "Accept flags: 0x%02x\n" % self.accept_flags
-        s = s + "Opcode: 0x%02x (%s)\n" % (self.opcode, ec_opcode_str(self.opcode))
+        s = s + "Opcode: 0x%02x\n" % self.opcode
         s = s + "Tag count: %d\n" % len(self.tags)
         s = s + "\nTags:\n\n"
 
@@ -177,7 +177,7 @@ class ECPacket:
 
         if with_raw:
             s = s + "\nRaw data:\n"
-            raw = self.get_raw_packet()
+            raw = self.get_raw_packet(codes)
             cnt = 0
             for c in raw:
                 s = s + "%02x" % ord(c)

@@ -77,8 +77,8 @@ class ECTag:
         return (data, 7 + taglen)
 
     def dump(self):
-        s = "Name: 0x%04x (%s)\n" % (self.name, ec_tagname_str(self.name))
-        s = s + "Type: 0x%02x (%s)\n" % (self.type, ec_tagtype_str(self.type))
+        s = "Name: 0x%04x\n" % self.name
+        s = s + "Type: 0x%02x\n" % self.type
         s = s + "Subtag count: %d\n" % len(self.subtags)
         if len(self.subtags):
             s = s + "----- SUBTAGS : -----\n"

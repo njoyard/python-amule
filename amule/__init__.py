@@ -20,7 +20,7 @@ __all__ = ['eccodes', 'ectag', 'ecpacket', 'ecpacketutils']
 import hashlib
 import socket
 
-from eccodes import *
+from eccodes import EC_KNOWN_VERSIONS, ECCodes 
 from ectag import *
 from ecpacket import ECPacket
 
@@ -52,6 +52,8 @@ class AmuleClient:
         
         """
         
+        self.codes = None
+        self.protocol_version = None
         self.server_version = None
         self._socket = None
         self._wfile = _NotConnectedFile()
@@ -59,12 +61,12 @@ class AmuleClient:
 
     def _writepacket(self, packet):
         """Send a packet to amuled"""
-        self._wfile.write(packet.get_raw_packet())
+        self._wfile.write(packet.get_raw_packet(self.codes))
         self._wfile.flush()
         
     def _readpacket(self):
         """Receive a packet from amuled"""
-        return ECPacket(buffer = self._rfile)
+        return ECPacket(self.codes, buffer = self._rfile)
         
     def _authenticate(self, password, client_name, client_version):
         """Authenticate with amuled
@@ -79,40 +81,55 @@ class AmuleClient:
         
         """
         
-        req_packet = ECPacket(opcode = EC_OP_AUTH_REQ)
-        req_packet.tags.extend([
-            ECStringTag(client_name, EC_TAG_CLIENT_NAME),
-            ECStringTag(client_version, EC_TAG_CLIENT_VERSION),
-            ECUInt16Tag(EC_CURRENT_PROTOCOL_VERSION, EC_TAG_PROTOCOL_VERSION)
-        ])
-        self._writepacket(req_packet)
-        resp = self._readpacket()
+        connected = False
+        for vers in EC_KNOWN_VERSIONS:
+            self.protocol_version = vers
+            self.codes = ECCodes(vers)
         
-        if resp.opcode != EC_OP_AUTH_SALT:
-            return False
-        try:
-            salt = resp.get_tag(EC_TAG_PASSWD_SALT).value
-        except AttributeError:
-            return False
+            pass_md5 = hashlib.md5(password).hexdigest()
+            req_packet = ECPacket(self.codes, opcode = self.codes.OP_AUTH_REQ)
+            req_packet.tags.extend([
+                ECStringTag(client_name, self.codes.TAG_CLIENT_NAME),
+                ECStringTag(client_version, self.codes.TAG_CLIENT_VERSION),
+                ECUInt16Tag(vers, self.codes.TAG_PROTOCOL_VERSION)
+            ])
             
-        salt_md5 = hashlib.md5("%lX" % salt).hexdigest()
-        pass_md5 = hashlib.md5(password).hexdigest()
-        pass_salt = hashlib.md5(pass_md5.lower() + salt_md5).hexdigest()
-        
-        pass_packet = ECPacket(opcode = EC_OP_AUTH_PASSWD)
-        pass_packet.tags.extend([
-            ECHash16Tag(pass_salt, EC_TAG_PASSWD_HASH)
-        ])
-        self._writepacket(pass_packet)
-        resp = self._readpacket()
-        
-        if resp.opcode != EC_OP_AUTH_OK:
-            return False
-        try:
-            self.server_version = resp.get_tag(EC_TAG_SERVER_VERSION).value
-        except AttributeError:
-            self.server_version = 'unknown'
-        return True
+            if vers < 0x0203:
+                req_packet.tags.append(
+                    ECHash16Tag(pass_md5, self.codes.TAG_PASSWD_HASH)
+                )
+                self._writepacket(req_packet)
+            else:
+                self._writepacket(req_packet)
+                resp = self._readpacket()
+                
+                if resp.opcode != self.codes.OP_AUTH_SALT:
+                    continue
+                try:
+                    salt = resp.get_tag(self.codes.TAG_PASSWD_SALT).value
+                except AttributeError:
+                    continue
+                    
+                salt_md5 = hashlib.md5("%lX" % salt).hexdigest()
+                pass_salt = hashlib.md5(pass_md5.lower() + salt_md5).hexdigest()
+                
+                pass_packet = ECPacket(self.codes, opcode = self.codes.OP_AUTH_PASSWD)
+                pass_packet.tags.extend([
+                    ECHash16Tag(pass_salt, self.codes.TAG_PASSWD_HASH)
+                ])
+                self._writepacket(pass_packet)
+                
+            resp = self._readpacket()            
+            if resp.opcode != self.codes.OP_AUTH_OK:
+                continue
+            try:
+                self.server_version = resp.get_tag(self.codes.TAG_SERVER_VERSION).value
+            except AttributeError:
+                self.server_version = 'unknown'
+            connected = True
+            break
+            
+        return connected
 
     def connect(self, host, port, password,
                 client_name = '', client_version = ''):
@@ -240,39 +257,39 @@ class AmuleClient:
         
     def get_server_status(self):
         """Get status variables from amuled"""
-        req_packet = ECPacket(opcode = EC_OP_STAT_REQ)
-        req_packet.tags.append(ECUInt8Tag(EC_DETAIL_CMD, EC_TAG_DETAIL_LEVEL))
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_STAT_REQ)
+        req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_CMD, self.codes.TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
         resp = self._readpacket()
         
         ret = self._linear_decoder(resp,
-            [EC_OP_STATS],
+            [self.codes.OP_STATS],
             {
-                EC_TAG_STATS_UL_SPEED: 'ul_speed',
-                EC_TAG_STATS_DL_SPEED: 'dl_speed',
-                EC_TAG_STATS_UL_SPEED_LIMIT: 'ul_speed_limit',
-                EC_TAG_STATS_DL_SPEED_LIMIT: 'dl_speed_limit',
-                EC_TAG_STATS_UL_QUEUE_LEN: 'ul_queue_len',
-                EC_TAG_STATS_TOTAL_SRC_COUNT: 'total_src_count',
-                EC_TAG_STATS_ED2K_USERS: 'ed2k_users',
-                EC_TAG_STATS_KAD_USERS: 'kad_users',
-                EC_TAG_STATS_ED2K_FILES: 'ed2k_files',
-                EC_TAG_STATS_KAD_FILES: 'kad_files',
-                EC_TAG_STATS_KAD_FIREWALLED_UDP: 'kad_firewalled_udp',
-                EC_TAG_STATS_KAD_INDEXED_SOURCES: 'kad_indexed_sources',
-                EC_TAG_STATS_KAD_INDEXED_KEYWORDS: 'kad_indexed_keywords',
-                EC_TAG_STATS_KAD_INDEXED_NOTES: 'kad_indexed_notes',
-                EC_TAG_STATS_KAD_INDEXED_LOAD: 'kad_indexed_load',
-                EC_TAG_STATS_KAD_IP_ADRESS: 'kad_ip_address',
-                EC_TAG_STATS_BUDDY_STATUS: 'buddy_status',
-                EC_TAG_STATS_BUDDY_IP: 'buddy_ip',
-                EC_TAG_STATS_BUDDY_PORT: 'buddy_port',
-                EC_TAG_CONNSTATE: 'connstate'
+                self.codes.TAG_STATS_UL_SPEED: 'ul_speed',
+                self.codes.TAG_STATS_DL_SPEED: 'dl_speed',
+                self.codes.TAG_STATS_UL_SPEED_LIMIT: 'ul_speed_limit',
+                self.codes.TAG_STATS_DL_SPEED_LIMIT: 'dl_speed_limit',
+                self.codes.TAG_STATS_UL_QUEUE_LEN: 'ul_queue_len',
+                self.codes.TAG_STATS_TOTAL_SRC_COUNT: 'total_src_count',
+                self.codes.TAG_STATS_ED2K_USERS: 'ed2k_users',
+                self.codes.TAG_STATS_KAD_USERS: 'kad_users',
+                self.codes.TAG_STATS_ED2K_FILES: 'ed2k_files',
+                self.codes.TAG_STATS_KAD_FILES: 'kad_files',
+                self.codes.TAG_STATS_KAD_FIREWALLED_UDP: 'kad_firewalled_udp',
+                self.codes.TAG_STATS_KAD_INDEXED_SOURCES: 'kad_indexed_sources',
+                self.codes.TAG_STATS_KAD_INDEXED_KEYWORDS: 'kad_indexed_keywords',
+                self.codes.TAG_STATS_KAD_INDEXED_NOTES: 'kad_indexed_notes',
+                self.codes.TAG_STATS_KAD_INDEXED_LOAD: 'kad_indexed_load',
+                self.codes.TAG_STATS_KAD_IP_ADRESS: 'kad_ip_address',
+                self.codes.TAG_STATS_BUDDY_STATUS: 'buddy_status',
+                self.codes.TAG_STATS_BUDDY_IP: 'buddy_ip',
+                self.codes.TAG_STATS_BUDDY_PORT: 'buddy_port',
+                self.codes.TAG_CONNSTATE: 'connstate'
             }
         )
         
         del(ret['ok'])
-        ret['client_id'] = resp.get_tag(EC_TAG_CONNSTATE).get_subtag(EC_TAG_CLIENT_ID).value
+        ret['client_id'] = resp.get_tag(self.codes.TAG_CONNSTATE).get_subtag(self.codes.TAG_CLIENT_ID).value
         return ret
 
     #
@@ -297,27 +314,27 @@ class AmuleClient:
         - 'message': reason for 'ok', as told by amuled
         
         """
-        req_packet = ECPacket(opcode = EC_OP_SEARCH_START)
-        req_packet.set_flag(EC_FLAG_UTF8_NUMBERS)
-        tag = ECUInt8Tag(method, EC_TAG_SEARCH_TYPE)
-        subtags = [ECStringTag(query, EC_TAG_SEARCH_NAME)]
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_SEARCH_START)
+        req_packet.set_flag(self.codes.FLAG_UTF8_NUMBERS)
+        tag = ECUInt8Tag(method, self.codes.TAG_SEARCH_TYPE)
+        subtags = [ECStringTag(query, self.codes.TAG_SEARCH_NAME)]
         if minsize is not None:
-            subtags.append(ECUInt32Tag(minsize, EC_TAG_SEARCH_MIN_SIZE))
+            subtags.append(ECUInt32Tag(minsize, self.codes.TAG_SEARCH_MIN_SIZE))
         if maxsize is not None:
-            subtags.append(ECUInt32Tag(maxsize, EC_TAG_SEARCH_MAX_SIZE))
-        subtags.append(ECStringTag(type, EC_TAG_SEARCH_FILE_TYPE))
+            subtags.append(ECUInt32Tag(maxsize, self.codes.TAG_SEARCH_MAX_SIZE))
+        subtags.append(ECStringTag(type, self.codes.TAG_SEARCH_FILE_TYPE))
         if ext is not None:
-            subtags.append(ECStringTag(ext, EC_TAG_SEARCH_EXTENSION))
+            subtags.append(ECStringTag(ext, self.codes.TAG_SEARCH_EXTENSION))
         if avail is not None:
-            subtags.append(ECUInt32Tag(avail, EC_TAG_SEARCH_AVAILABILITY))
+            subtags.append(ECUInt32Tag(avail, self.codes.TAG_SEARCH_AVAILABILITY))
         tag.subtags.extend(subtags)
         req_packet.tags.append(tag)
         self._writepacket(req_packet)
         resp = self._readpacket()
         
         return self._linear_decoder(resp,
-            [EC_OP_FAILED],
-            {EC_TAG_STRING: 'message'}
+            [self.codes.OP_FAILED],
+            {self.codes.TAG_STRING: 'message'}
         )
         
     def get_search_progress(self):
@@ -328,11 +345,11 @@ class AmuleClient:
         
         """
     
-        req_packet = ECPacket(opcode = EC_OP_SEARCH_PROGRESS)
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_SEARCH_PROGRESS)
         self._writepacket(req_packet)
         resp = self._readpacket()
         
-        return resp.get_tag(EC_TAG_SEARCH_STATUS).value
+        return resp.get_tag(self.codes.TAG_SEARCH_STATUS).value
         
     def get_search_results(self, update = False):
         """Get search results from amuled
@@ -350,21 +367,21 @@ class AmuleClient:
         search results were fetched from amuled.
         
         """
-        req_packet = ECPacket(opcode = EC_OP_SEARCH_RESULTS)
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_SEARCH_RESULTS)
         if update:
-            req_packet.tags.append(ECUInt8Tag(EC_DETAIL_INC_UPDATE,
-                                                EC_TAG_DETAIL_LEVEL))
+            req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_INC_UPDATE,
+                                                self.codes.TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
         resp = self._readpacket()
         
         return self._list_decoder(resp,
-            [EC_OP_SEARCH_RESULTS],
-            EC_TAG_SEARCHFILE,
+            [self.codes.OP_SEARCH_RESULTS],
+            self.codes.TAG_SEARCHFILE,
             {
-                EC_TAG_PARTFILE_SOURCE_COUNT: 'src_count',
-                EC_TAG_PARTFILE_SOURCE_COUNT_XFER: 'src_count_xfer',
-                EC_TAG_PARTFILE_NAME: 'name',
-                EC_TAG_PARTFILE_SIZE_FULL: 'size'
+                self.codes.TAG_PARTFILE_SOURCE_COUNT: 'src_count',
+                self.codes.TAG_PARTFILE_SOURCE_COUNT_XFER: 'src_count_xfer',
+                self.codes.TAG_PARTFILE_NAME: 'name',
+                self.codes.TAG_PARTFILE_SIZE_FULL: 'size'
             }
         )['items']
      
@@ -373,10 +390,10 @@ class AmuleClient:
     #
         
     def download_search_results(self, hashes, category = 0):
-        req_packet = ECPacket(opcode = EC_OP_DOWNLOAD_SEARCH_RESULT)
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_DOWNLOAD_SEARCH_RESULT)
         for h in hashes:
-            tag = ECHash16Tag(h, EC_TAG_SEARCHFILE)
-            tag.subtags.append(ECUInt8Tag(category, EC_TAG_CATEGORY))
+            tag = ECHash16Tag(h, self.codes.TAG_SEARCHFILE)
+            tag.subtags.append(ECUInt8Tag(category, self.codes.TAG_CATEGORY))
             req_packet.tags.append(tag)
         self._writepacket(req_packet)
         resp = self._readpacket()
@@ -385,65 +402,66 @@ class AmuleClient:
         return True
 
     def download_ed2klinks(self, links, category = 0):
-        req_packet = ECPacket(opcode = EC_OP_ADD_LINK)
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_ADD_LINK)
         for l in links:
-            tag = ECStringTag(l, EC_TAG_STRING)
-            tag.subtags.append(ECUInt8Tag(category, EC_TAG_CATEGORY))
+            tag = ECStringTag(l, self.codes.TAG_STRING)
+            tag.subtags.append(ECUInt8Tag(category, self.codes.TAG_CATEGORY))
             req_packet.tags.append(tag)
             
         self._writepacket(req_packet)
         resp = self._readpacket()
         
-        if resp.opcode == EC_OP_NOOP:
+        if resp.opcode == self.codes.OP_NOOP:
             return True
         else:
             return False
         
     def get_download_list(self, detail = False, update = False):
         if detail:
-            req_packet = ECPacket(opcode = EC_OP_GET_DLOAD_QUEUE_DETAIL)
-            req_packet.tags.append(ECUInt8Tag(EC_DETAIL_FULL,
-                                                    EC_TAG_DETAIL_LEVEL))
+            req_packet = ECPacket(self.codes, opcode = self.codes.OP_GET_DLOAD_QUEUE_DETAIL)
+            req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_FULL,
+                                                    self.codes.TAG_DETAIL_LEVEL))
         else:
-            req_packet = ECPacket(opcode = EC_OP_GET_DLOAD_QUEUE)
+            req_packet = ECPacket(self.codes, opcode = self.codes.OP_GET_DLOAD_QUEUE)
             if update:
-                req_packet.tags.append(ECUInt8Tag(EC_DETAIL_INC_UPDATE,
-                                                    EC_TAG_DETAIL_LEVEL))
+                req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_INC_UPDATE,
+                                                    self.codes.TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
         resp = self._readpacket()
-                
+
+        mapping = {
+            self.codes.TAG_PARTFILE_STATUS: 'status',
+            self.codes.TAG_PARTFILE_SOURCE_COUNT: 'src_count',
+            self.codes.TAG_PARTFILE_SOURCE_COUNT_NOT_CURRENT: 'src_count_not_current',
+            self.codes.TAG_PARTFILE_SOURCE_COUNT_XFER: 'src_count_xfer',
+            self.codes.TAG_PARTFILE_SOURCE_COUNT_A4AF: 'src_count_a4af',
+            self.codes.TAG_PARTFILE_NAME: 'name',
+            self.codes.TAG_PARTFILE_SIZE_XFER: 'size_xfer',
+            self.codes.TAG_PARTFILE_SIZE_DONE: 'size_done',
+            self.codes.TAG_PARTFILE_SIZE_FULL: 'size',
+            self.codes.TAG_PARTFILE_SPEED: 'speed',
+            self.codes.TAG_PARTFILE_PRIO: 'prio',
+            self.codes.TAG_PARTFILE_CAT: 'cat',
+            self.codes.TAG_PARTFILE_LAST_SEEN_COMP: 'last_seen_comp',
+            self.codes.TAG_PARTFILE_LAST_RECV: 'last_recv',
+            self.codes.TAG_PARTFILE_PARTMETID: 'partmetid',
+            self.codes.TAG_PARTFILE_ED2K_LINK: 'ed2k_link',
+            self.codes.TAG_PARTFILE_SOURCE_NAMES: ['source_names', self.codes.TAG_PARTFILE_SOURCE_NAMES]
+        }
+        
+        if self.protocol_version >= 0x0203:
+            mapping.extend({
+                self.codes.TAG_PARTFILE_LOST_CORRUPTION: 'lost_corruption',
+                self.codes.TAG_PARTFILE_GAINED_COMPRESSION: 'gained_compression',
+                self.codes.TAG_PARTFILE_SAVED_ICH: 'saved_ich',
+                self.codes.TAG_PARTFILE_STOPPED: 'stopped',
+                self.codes.TAG_PARTFILE_DOWNLOAD_ACTIVE: 'download_active'
+            })
+        
         return self._list_decoder(resp,
-            [EC_OP_DLOAD_QUEUE],
-            EC_TAG_PARTFILE,
-            {
-                EC_TAG_PARTFILE_STATUS: 'status',
-                EC_TAG_PARTFILE_STOPPED: 'stopped',
-                EC_TAG_PARTFILE_SOURCE_COUNT: 'src_count',
-                EC_TAG_PARTFILE_SOURCE_COUNT_NOT_CURRENT: 'src_count_not_current',
-                EC_TAG_PARTFILE_SOURCE_COUNT_XFER: 'src_count_xfer',
-                EC_TAG_PARTFILE_SOURCE_COUNT_A4AF: 'src_count_a4af',
-                EC_TAG_PARTFILE_NAME: 'name',
-                EC_TAG_PARTFILE_SIZE_XFER: 'size_xfer',
-                EC_TAG_PARTFILE_SIZE_DONE: 'size_done',
-                EC_TAG_PARTFILE_SIZE_FULL: 'size',
-                EC_TAG_PARTFILE_SPEED: 'speed',
-                EC_TAG_PARTFILE_PRIO: 'prio',
-                EC_TAG_PARTFILE_CAT: 'cat',
-                EC_TAG_PARTFILE_LAST_SEEN_COMP: 'last_seen_comp',
-                EC_TAG_PARTFILE_LAST_RECV: 'last_recv',
-                EC_TAG_PARTFILE_DOWNLOAD_ACTIVE: 'download_active',
-                EC_TAG_PARTFILE_LOST_CORRUPTION: 'lost_corruption',
-                EC_TAG_PARTFILE_GAINED_COMPRESSION: 'gained_compression',
-                EC_TAG_PARTFILE_SAVED_ICH: 'saved_ich',
-                # These 4 tags are CUSTOM which I don't know how to handle (yet)
-                # EC_TAG_PARTFILE_COMMENTS: 'comments',
-                # EC_TAG_PARTFILE_PART_STATUS: 'part_status',
-                # EC_TAG_PARTFILE_GAP_STATUS: 'gap_status',
-                # EC_TAG_PARTFILE_REQ_STATUS: 'req_status',
-                EC_TAG_PARTFILE_PARTMETID: 'partmetid',
-                EC_TAG_PARTFILE_ED2K_LINK: 'ed2k_link',
-                EC_TAG_PARTFILE_SOURCE_NAMES: ['source_names', EC_TAG_PARTFILE_SOURCE_NAMES]
-            }
+            [self.codes.OP_DLOAD_QUEUE],
+            self.codes.TAG_PARTFILE,
+            mapping
         )['items']
         
     #
@@ -460,9 +478,9 @@ class AmuleClient:
         
         """
         
-        req_packet = ECPacket(opcode = opcode)
+        req_packet = ECPacket(self.codes, opcode = opcode)
         for h in hashes:
-            tag = ECHash16Tag(h, EC_TAG_PARTFILE)
+            tag = ECHash16Tag(h, self.codes.TAG_PARTFILE)
             if arg is not None:
                 tag.subtags.append(arg)
             req_packet.tags.append(tag)
@@ -470,62 +488,62 @@ class AmuleClient:
         self._writepacket(req_packet)
         resp = self._readpacket()
         
-        if resp.opcode == EC_OP_NOOP:
+        if resp.opcode == self.codes.OP_NOOP:
             return True
         else:
             return False
         
     def partfile_remove_noneed(self, hashes):
         """Remove not needed sources from partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_REMOVE_NO_NEEDED)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_REMOVE_NO_NEEDED)
         
     def partfile_remove_fullqueue(self, hashes):
         """Remove sources with a full UL queue from partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_REMOVE_FULL_QUEUE)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_REMOVE_FULL_QUEUE)
         
     def partfile_remove_highqueue(self, hashes):
         """Remove sources with a high UL queue from partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_REMOVE_HIGH_QUEUE)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_REMOVE_HIGH_QUEUE)
         
     def partfile_cleanup_sources(self, hashes):
         """Clean up sources from partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_CLEANUP_SOURCES)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_CLEANUP_SOURCES)
         
     def partfile_swap_a4af_this(self, hashes):
         """Swap A4AF sources to these partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SWAP_A4AF_THIS)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_SWAP_A4AF_THIS)
         
     def partfile_swap_a4af_this_auto(self, hashes):
         """Automatically swap A4AF sources to these partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SWAP_A4AF_THIS_AUTO)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_SWAP_A4AF_THIS_AUTO)
         
     def partfile_swap_a4af_others(self, hashes):
         """Swap A4AF sources of partfiles to other partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SWAP_A4AF_OTHERS)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_SWAP_A4AF_OTHERS)
         
     def partfile_pause(self, hashes):
         """Pause partfiles download"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_PAUSE)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_PAUSE)
         
     def partfile_resume(self, hashes):
         """Resume partfiles download"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_RESUME)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_RESUME)
         
     def partfile_stop(self, hashes):
         """Stop partfiles download"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_STOP)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_STOP)
         
     def partfile_delete(self, hashes):
         """Delete partfiles"""
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_DELETE)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_DELETE)
         
     def partfile_set_prio(self, hashes, prio):
         """Set partfiles priority"""
-        arg = ECUInt8Tag(prio, EC_TAG_PARTFILE_PRIO)
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_PRIO_SET, arg)
+        arg = ECUInt8Tag(prio, self.codes.TAG_PARTFILE_PRIO)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_PRIO_SET, arg)
         
     def partfile_set_cat(self, hashes, cat = 0):
         """Set partfiles category"""
-        arg = ECUInt8Tag(cat, EC_TAG_PARTFILE_CAT)
-        return self._partfile_cmd(hashes, EC_OP_PARTFILE_SET_CAT, arg)
+        arg = ECUInt8Tag(cat, self.codes.TAG_PARTFILE_CAT)
+        return self._partfile_cmd(hashes, self.codes.OP_PARTFILE_SET_CAT, arg)
         

@@ -20,7 +20,7 @@ from distutils.core import setup
 
 setup(
     name = 'amule',
-    version = '0.1',
+    version = '0.2.0',
     description = 'Python aMule client library',
 
     classifiers = [

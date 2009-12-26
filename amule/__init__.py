@@ -68,7 +68,7 @@ class AmuleClient:
         """Receive a packet from amuled"""
         return ECPacket(self.codes, buffer = self._rfile)
         
-    def _authenticate(self, password, client_name, client_version):
+    def _authenticate(self, vers, password, client_name, client_version):
         """Authenticate with amuled
         
         Send a first packet to request authentication (with client_name,
@@ -81,67 +81,52 @@ class AmuleClient:
         
         """
         
-        connected = False
-        for vers in EC_KNOWN_VERSIONS:
-            self.protocol_version = vers
-            self.codes = ECCodes(vers)
+        self.protocol_version = vers
+        self.codes = ECCodes(vers)
+    
+        pass_md5 = hashlib.md5(password).hexdigest()
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_AUTH_REQ)
+        req_packet.tags.extend([
+            ECStringTag(client_name, self.codes.TAG_CLIENT_NAME),
+            ECStringTag(client_version, self.codes.TAG_CLIENT_VERSION),
+            ECUInt16Tag(vers, self.codes.TAG_PROTOCOL_VERSION)
+        ])
         
-            pass_md5 = hashlib.md5(password).hexdigest()
-            req_packet = ECPacket(self.codes, opcode = self.codes.OP_AUTH_REQ)
-            req_packet.tags.extend([
-                ECStringTag(client_name, self.codes.TAG_CLIENT_NAME),
-                ECStringTag(client_version, self.codes.TAG_CLIENT_VERSION),
-                ECUInt16Tag(vers, self.codes.TAG_PROTOCOL_VERSION)
-            ])
+        if vers < 0x0203:
+            req_packet.tags.append(
+                ECHash16Tag(pass_md5, self.codes.TAG_PASSWD_HASH)
+            )
+            self._writepacket(req_packet)
+        else:
+            self._writepacket(req_packet)
+            resp = self._readpacket()
             
-            if vers < 0x0203:
-                req_packet.tags.append(
-                    ECHash16Tag(pass_md5, self.codes.TAG_PASSWD_HASH)
-                )
-                self._writepacket(req_packet)
-            else:
-                self._writepacket(req_packet)
-                resp = self._readpacket()
-                
-                if resp.opcode != self.codes.OP_AUTH_SALT:
-                    continue
-                try:
-                    salt = resp.get_tag(self.codes.TAG_PASSWD_SALT).value
-                except AttributeError:
-                    continue
-                    
-                salt_md5 = hashlib.md5("%lX" % salt).hexdigest()
-                pass_salt = hashlib.md5(pass_md5.lower() + salt_md5).hexdigest()
-                
-                pass_packet = ECPacket(self.codes, opcode = self.codes.OP_AUTH_PASSWD)
-                pass_packet.tags.extend([
-                    ECHash16Tag(pass_salt, self.codes.TAG_PASSWD_HASH)
-                ])
-                self._writepacket(pass_packet)
-                
-            resp = self._readpacket()            
-            if resp.opcode != self.codes.OP_AUTH_OK:
-                continue
+            if resp.opcode != self.codes.OP_AUTH_SALT:
+                return False
             try:
-                self.server_version = resp.get_tag(self.codes.TAG_SERVER_VERSION).value
+                salt = resp.get_tag(self.codes.TAG_PASSWD_SALT).value
             except AttributeError:
-                self.server_version = 'unknown'
-            connected = True
-            break
+                return False
+                
+            salt_md5 = hashlib.md5("%lX" % salt).hexdigest()
+            pass_salt = hashlib.md5(pass_md5.lower() + salt_md5).hexdigest()
             
-        return connected
-
-    def connect(self, host, port, password,
-                client_name = '', client_version = ''):
-        """Attempt connection to amuled
+            pass_packet = ECPacket(self.codes, opcode = self.codes.OP_AUTH_PASSWD)
+            pass_packet.tags.extend([
+                ECHash16Tag(pass_salt, self.codes.TAG_PASSWD_HASH)
+            ])
+            self._writepacket(pass_packet)
+            
+        resp = self._readpacket()            
+        if resp.opcode != self.codes.OP_AUTH_OK:
+            return False
+        try:
+            self.server_version = resp.get_tag(self.codes.TAG_SERVER_VERSION).value
+        except AttributeError:
+            self.server_version = 'unknown'
+        return True
         
-        Try to create a socket with amuled, as well as read/write buffers from
-        this socket.  When successful, run authenticate handshake with amuled.
-        
-        Raises ECConnectionError or socket.error on failure.
-        
-        """
-        
+    def _connect(self, host, port):
         if self._socket:
             raise ECConnectionError("Already connected")
 
@@ -170,15 +155,32 @@ class AmuleClient:
         self._wfile = self._socket.makefile("wb")
         self._rfile = self._socket.makefile("rb")
 
-        try:
-            ret = self._authenticate(password, client_name, client_version)
-        except:
-            self.disconnect()
-            raise
-        else:
-            if not ret:
+    def connect(self, host, port, password,
+                client_name = '', client_version = ''):
+        """Attempt connection to amuled
+        
+        Try to create a socket with amuled, as well as read/write buffers from
+        this socket.  When successful, run authenticate handshake with amuled.
+        
+        Raises ECConnectionError or socket.error on failure.
+        
+        """
+        ok = False
+        for vers in EC_KNOWN_VERSIONS:
+            self._connect(host, port)
+            try:
+                ok = self._authenticate(vers, password, client_name,
+                    client_version)
+            except:
                 self.disconnect()
-                raise ECConnectionError("Authentication failed.")
+            else:
+                if ok:
+                    break
+                else:
+                    self.disconnect()
+                    
+        if not ok:
+            raise ECConnectionError("Authentication failed")
 
     def disconnect(self):
         """Disconnect from amuled
@@ -450,13 +452,15 @@ class AmuleClient:
         }
         
         if self.protocol_version >= 0x0203:
-            mapping.extend({
+            sup = {
                 self.codes.TAG_PARTFILE_LOST_CORRUPTION: 'lost_corruption',
                 self.codes.TAG_PARTFILE_GAINED_COMPRESSION: 'gained_compression',
                 self.codes.TAG_PARTFILE_SAVED_ICH: 'saved_ich',
                 self.codes.TAG_PARTFILE_STOPPED: 'stopped',
                 self.codes.TAG_PARTFILE_DOWNLOAD_ACTIVE: 'download_active'
-            })
+            }
+            for k in sup.keys():
+                mapping[k] = sup[k]
         
         return self._list_decoder(resp,
             [self.codes.OP_DLOAD_QUEUE],

@@ -20,7 +20,7 @@ __all__ = ['eccodes', 'ectag', 'ecpacket', 'ecpacketutils']
 import hashlib
 import socket
 
-from eccodes import EC_KNOWN_VERSIONS, ECCodes 
+from eccodes import *
 from ectag import *
 from ecpacket import ECPacket
 
@@ -260,23 +260,26 @@ class AmuleClient:
     def get_server_status(self):
         """Get status variables from amuled"""
         req_packet = ECPacket(self.codes, opcode = self.codes.OP_STAT_REQ)
-        req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_CMD, self.codes.TAG_DETAIL_LEVEL))
+        req_packet.tags.append(ECUInt8Tag(EC_DETAIL_FULL, self.codes.TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
         resp = self._readpacket()
         
-        ret = self._linear_decoder(resp,
-            [self.codes.OP_STATS],
-            {
-                self.codes.TAG_STATS_UL_SPEED: 'ul_speed',
-                self.codes.TAG_STATS_DL_SPEED: 'dl_speed',
-                self.codes.TAG_STATS_UL_SPEED_LIMIT: 'ul_speed_limit',
-                self.codes.TAG_STATS_DL_SPEED_LIMIT: 'dl_speed_limit',
-                self.codes.TAG_STATS_UL_QUEUE_LEN: 'ul_queue_len',
-                self.codes.TAG_STATS_TOTAL_SRC_COUNT: 'total_src_count',
-                self.codes.TAG_STATS_ED2K_USERS: 'ed2k_users',
-                self.codes.TAG_STATS_KAD_USERS: 'kad_users',
-                self.codes.TAG_STATS_ED2K_FILES: 'ed2k_files',
-                self.codes.TAG_STATS_KAD_FILES: 'kad_files',
+        mapping = {
+            self.codes.TAG_STATS_UL_SPEED: 'ul_speed',
+            self.codes.TAG_STATS_DL_SPEED: 'dl_speed',
+            self.codes.TAG_STATS_UL_SPEED_LIMIT: 'ul_speed_limit',
+            self.codes.TAG_STATS_DL_SPEED_LIMIT: 'dl_speed_limit',
+            self.codes.TAG_STATS_UL_QUEUE_LEN: 'ul_queue_len',
+            self.codes.TAG_STATS_TOTAL_SRC_COUNT: 'total_src_count',
+            self.codes.TAG_STATS_ED2K_USERS: 'ed2k_users',
+            self.codes.TAG_STATS_KAD_USERS: 'kad_users',
+            self.codes.TAG_STATS_ED2K_FILES: 'ed2k_files',
+            self.codes.TAG_STATS_KAD_FILES: 'kad_files',
+            self.codes.TAG_CONNSTATE: 'connstate'
+        }
+        
+        if self.protocol_version >= 0x0203:
+            sup = {
                 self.codes.TAG_STATS_KAD_FIREWALLED_UDP: 'kad_firewalled_udp',
                 self.codes.TAG_STATS_KAD_INDEXED_SOURCES: 'kad_indexed_sources',
                 self.codes.TAG_STATS_KAD_INDEXED_KEYWORDS: 'kad_indexed_keywords',
@@ -285,13 +288,17 @@ class AmuleClient:
                 self.codes.TAG_STATS_KAD_IP_ADRESS: 'kad_ip_address',
                 self.codes.TAG_STATS_BUDDY_STATUS: 'buddy_status',
                 self.codes.TAG_STATS_BUDDY_IP: 'buddy_ip',
-                self.codes.TAG_STATS_BUDDY_PORT: 'buddy_port',
-                self.codes.TAG_CONNSTATE: 'connstate'
+                self.codes.TAG_STATS_BUDDY_PORT: 'buddy_port'
             }
-        )
+            for k in sup.keys():
+                mapping[k] = sup[k]
+        
+        ret = self._linear_decoder(resp, [self.codes.OP_STATS], mapping)
         
         del(ret['ok'])
-        ret['client_id'] = resp.get_tag(self.codes.TAG_CONNSTATE).get_subtag(self.codes.TAG_CLIENT_ID).value
+        
+        if self.protocol_version >= 0x203:
+            ret['client_id'] = resp.get_tag(self.codes.TAG_CONNSTATE).get_subtag(self.codes.TAG_CLIENT_ID).value
         return ret
 
     #
@@ -317,7 +324,7 @@ class AmuleClient:
         
         """
         req_packet = ECPacket(self.codes, opcode = self.codes.OP_SEARCH_START)
-        req_packet.set_flag(self.codes.FLAG_UTF8_NUMBERS)
+        #req_packet.set_flag(self.codes.FLAG_UTF8_NUMBERS)
         tag = ECUInt8Tag(method, self.codes.TAG_SEARCH_TYPE)
         subtags = [ECStringTag(query, self.codes.TAG_SEARCH_NAME)]
         if minsize is not None:
@@ -371,7 +378,7 @@ class AmuleClient:
         """
         req_packet = ECPacket(self.codes, opcode = self.codes.OP_SEARCH_RESULTS)
         if update:
-            req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_INC_UPDATE,
+            req_packet.tags.append(ECUInt8Tag(EC_DETAIL_INC_UPDATE,
                                                 self.codes.TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
         resp = self._readpacket()
@@ -386,6 +393,48 @@ class AmuleClient:
                 self.codes.TAG_PARTFILE_SIZE_FULL: 'size'
             }
         )['items']
+        
+    #
+    # Shared list
+    #    
+        
+    def get_shared_list(self, update = False):
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_GET_SHARED_FILES)
+        if update:
+            req_packet.tags.append(ECUInt8Tag(EC_DETAIL_INC_UPDATE,
+                                                self.codes.TAG_DETAIL_LEVEL))
+        self._writepacket(req_packet)
+        resp = self._readpacket()
+
+        mapping = {
+            self.codes.TAG_PARTFILE_NAME: 'name',
+            self.codes.TAG_PARTFILE_SIZE_FULL: 'size',
+            self.codes.TAG_PARTFILE_ED2K_LINK: 'ed2k_link',
+            self.codes.TAG_PARTFILE_PRIO: 'prio',
+            self.codes.TAG_KNOWNFILE_XFERRED: 'xferred',
+            self.codes.TAG_KNOWNFILE_XFERRED_ALL: 'xferred_all',
+            self.codes.TAG_KNOWNFILE_REQ_COUNT: 'req_count',
+            self.codes.TAG_KNOWNFILE_REQ_COUNT_ALL: 'req_count_all',
+            self.codes.TAG_KNOWNFILE_ACCEPT_COUNT: 'accept_count',
+            self.codes.TAG_KNOWNFILE_ACCEPT_COUNT_ALL: 'accept_count_all',
+            self.codes.TAG_KNOWNFILE_AICH_MASTERHASH: 'aich_masterhash'
+        }
+        
+        return self._list_decoder(resp,
+            [self.codes.OP_SHARED_FILES],
+            self.codes.TAG_KNOWNFILE,
+            mapping
+        )['items']
+        
+    def reload_shared_files(self):
+        req_packet = ECPacket(self.codes, opcode = self.codes.OP_SHAREDFILES_RELOAD)
+        self._writepacket(req_packet)
+        resp = self._readpacket()
+        
+        if resp.opcode == self.codes.OP_NOOP:
+            return True
+        else:
+            return False
      
     #
     # Download list
@@ -421,12 +470,12 @@ class AmuleClient:
     def get_download_list(self, detail = False, update = False):
         if detail:
             req_packet = ECPacket(self.codes, opcode = self.codes.OP_GET_DLOAD_QUEUE_DETAIL)
-            req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_FULL,
+            req_packet.tags.append(ECUInt8Tag(EC_DETAIL_FULL,
                                                     self.codes.TAG_DETAIL_LEVEL))
         else:
             req_packet = ECPacket(self.codes, opcode = self.codes.OP_GET_DLOAD_QUEUE)
             if update:
-                req_packet.tags.append(ECUInt8Tag(self.codes.DETAIL_INC_UPDATE,
+                req_packet.tags.append(ECUInt8Tag(EC_DETAIL_INC_UPDATE,
                                                     self.codes.TAG_DETAIL_LEVEL))
         self._writepacket(req_packet)
         resp = self._readpacket()
